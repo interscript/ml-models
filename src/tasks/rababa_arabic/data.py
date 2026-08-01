@@ -73,8 +73,12 @@ class RababaArabicData(DataModule):
     def prepare_data(self) -> PreparedData:
         if self._prepared is not None:
             return self._prepared
-        raw_path = self.data_root / "raw" / f"{self.config.source}.txt"
-        examples = self._read_examples(raw_path)
+        tsv_path = self.data_root / "raw" / f"{self.config.source}.tsv"
+        txt_path = self.data_root / "raw" / f"{self.config.source}.txt"
+        if tsv_path.is_file():
+            examples = self._read_examples_tsv(tsv_path)
+        else:
+            examples = self._read_examples(txt_path)
         if not examples:
             examples = self._fallback_examples()
         random.Random(42).shuffle(examples)
@@ -118,6 +122,33 @@ class RababaArabicData(DataModule):
             if not bare.strip():
                 continue
             out.append((bare, diacritized))
+        return out
+
+    def _read_examples_tsv(self, path: Path) -> list[tuple[str, str]]:
+        """Read paired ``bare<TAB>diacritized`` rows from the fetcher.
+
+        Preferred over the single-text path because the upstream dataset
+        carries both columns already paired — no stripping needed, and
+        the dataset's canonical letter forms are preserved.
+        """
+        if not path.is_file():
+            return []
+        out: list[tuple[str, str]] = []
+        for line in path.read_text(encoding="utf-8").splitlines():
+            line = line.rstrip("\n")
+            if not line:
+                continue
+            parts = line.split("\t")
+            if len(parts) < 2:
+                continue
+            bare = clean_arabic(parts[0])
+            diacritized = clean_arabic(parts[1])
+            if not bare or not diacritized:
+                continue
+            bare_dediac = strip_diacritics(bare)
+            if not bare_dediac.strip():
+                continue
+            out.append((bare_dediac, diacritized))
         return out
 
     def _fallback_examples(self) -> list[tuple[str, str]]:
