@@ -277,17 +277,54 @@ def evaluate(spec_id: str = "heb-diac-small", limit: int = 0) -> dict:
             out = model.generate(**ids, max_new_tokens=max_len, num_beams=1)
         return tokenizer.batch_decode(out, skip_special_tokens=True)[0].strip()
 
-    def metrics(model) -> dict:
-        der_sum = cer_sum = n = 0.0
+    import random
+
+    def per_pair_der(model) -> list[float]:
+        ders = []
         for src, tgt in pairs:
             pred = greedy(model, src)
             gold_n, pred_n = _nikud_only(tgt), _nikud_only(pred)
-            der_sum += _edit_distance(pred_n, gold_n) / max(1, len(gold_n))
+            ders.append(
+                100 * _edit_distance(pred_n, gold_n) / max(1, len(gold_n))
+            )
+        return ders
+
+    def metrics(model) -> dict:
+        ders = per_pair_der(model)
+        cer_sum = n = 0.0
+        for src, tgt in pairs:
+            pred = greedy(model, src)
             cer_sum += _edit_distance(list(pred), list(tgt)) / max(1, len(tgt))
             n += 1
-        return {"der": round(100 * der_sum / n, 2), "cer": round(100 * cer_sum / n, 2), "n": int(n)}
+        return {
+            "der": round(sum(ders) / len(ders), 2),
+            "cer": round(100 * cer_sum / n, 2),
+            "n": int(n),
+        }
 
-    return {"teacher": metrics(teacher), "student": metrics(student)}
+    teacher_ders = per_pair_der(teacher)
+    student_ders = per_pair_der(student)
+    deltas = [s - t for s, t in zip(student_ders, teacher_ders, strict=True)]
+
+    # Paired bootstrap (microkimi eval_compare protocol): sentences are
+    # the resampling unit; a point-estimate delta without a CI is not
+    # evidence the student regressed.
+    rng = random.Random(42)
+    means = []
+    for _ in range(1000):
+        sample = [deltas[rng.randrange(len(deltas))] for _ in deltas]
+        means.append(sum(sample) / len(sample))
+    means.sort()
+    ci = (round(means[24], 3), round(means[974], 3))
+    p_value = sum(1 for m in means if m <= 0) / len(means)
+
+    return {
+        "teacher": metrics(teacher),
+        "student": metrics(student),
+        "paired_delta_pp": round(sum(deltas) / len(deltas), 3),
+        "bootstrap_ci95": ci,
+        "p_value_student_worse": round(p_value, 4),
+    }
 
 
 @app.local_entrypoint()
